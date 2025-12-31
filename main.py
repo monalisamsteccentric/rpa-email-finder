@@ -1,3 +1,6 @@
+import os, json
+
+creds = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 
 import requests
 
