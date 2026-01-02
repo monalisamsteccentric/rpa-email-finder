@@ -2,15 +2,12 @@ name: Daily Email Finder
 
 on:
   schedule:
-    - cron: "0 4 * * *"   # roz subah 9:30 IST
+    - cron: "0 4 * * *"   # 9:30 AM IST
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
-
-    env:
-      GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
 
     steps:
       - name: Checkout repo
@@ -26,3 +23,6 @@ jobs:
 
       - name: Run email finder
         run: python main.py
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          SERP_API_KEY: ${{ secrets.SERP_API_KEY }}
