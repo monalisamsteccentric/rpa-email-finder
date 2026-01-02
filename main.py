@@ -1,101 +1,64 @@
-import os
-import json
-import re
-import requests
+import os, json, re, requests, time
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 
-
-# =========================
-# CONFIG
-# =========================
-
-SERP_API_KEY = os.environ.get("SERP_API_KEY")  # set this also as GitHub secret
-SHEET_NAME = "RPA_Leads"
-
-SEARCH_QUERIES = [
-    "RPA automation consultant email",
-    "Robotic Process Automation services contact",
-    "RPA services company contact email",
-    "business process automation consultant email"
-]
-
-
-# =========================
-# GOOGLE SHEETS AUTH
-# =========================
-
-scope = [
-    "https://spreadsheets.google.com/feeds",
+# ---------- GOOGLE SHEET ----------
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
 ]
 
 creds_dict = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 client = gspread.authorize(creds)
 
+SHEET_NAME = "RPA_Leads"
 sheet = client.open(SHEET_NAME).sheet1
-existing_emails = set(sheet.col_values(1))
+existing = set(sheet.col_values(1))
 
-
-# =========================
-# UTIL FUNCTIONS
-# =========================
-
-EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-
-def extract_emails(text):
-    return set(re.findall(EMAIL_REGEX, text))
-
+# ---------- SERP API ----------
+SERP_API_KEY = os.environ.get("SERP_API_KEY")
 
 def google_search(query):
     url = "https://serpapi.com/search"
     params = {
         "q": query,
-        "api_key": SERP_API_KEY,
         "engine": "google",
-        "num": 10
+        "api_key": SERP_API_KEY,
+        "num": 5
     }
-    return requests.get(url, params=params, timeout=30).json()
+    return requests.get(url, params=params).json()
 
+# ---------- EMAIL EXTRACTION ----------
+EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
 
-def collect_emails_from_results(results):
-    emails = set()
-
-    for r in results.get("organic_results", []):
-        snippet = r.get("snippet", "")
-        title = r.get("title", "")
-        emails |= extract_emails(snippet)
-        emails |= extract_emails(title)
-
-    return emails
-
+def extract_emails_from_url(url):
+    try:
+        html = requests.get(url, timeout=10).text
+        return set(EMAIL_REGEX.findall(html))
+    except:
+        return set()
 
 def add_new_emails(emails):
-    new_rows = []
-    for email in emails:
-        if email not in existing_emails:
-            new_rows.append([email])
-            existing_emails.add(email)
+    for e in emails:
+        if e not in existing:
+            sheet.append_row([e])
+            existing.add(e)
 
-    if new_rows:
-        sheet.append_rows(new_rows)
-        print(f"Added {len(new_rows)} new emails")
-    else:
-        print("No new emails found")
+# ---------- MAIN ----------
+queries = [
+    "RPA automation services",
+    "Robotic Process Automation consulting"
+]
 
+for q in queries:
+    print(f"Searching: {q}")
+    results = google_search(q)
 
-# =========================
-# MAIN
-# =========================
-
-def main():
-    for query in SEARCH_QUERIES:
-        print(f"Searching: {query}")
-        results = google_search(query)
-        emails = collect_emails_from_results(results)
-        add_new_emails(emails)
-
-
-if __name__ == "__main__":
-    main()
+    for r in results.get("organic_results", []):
+        link = r.get("link")
+        if link:
+            emails = extract_emails_from_url(link)
+            if emails:
+                add_new_emails(emails)
+            time.sleep(2)  # polite scraping
