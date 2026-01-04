@@ -77,9 +77,19 @@ def crawl_site(url):
 
 # ================= KEYWORD PAGE STATE =================
 def get_keyword_page(keyword):
-    records = sheet.get_all_records()
-    pages = [r["Page Number"] for r in records if r.get("Keyword") == keyword]
-    return max(pages) if pages else 0
+    keywords = sheet.col_values(3)   # Column C
+    pages = sheet.col_values(4)      # Column D
+
+    max_page = 0
+    for k, p in zip(keywords, pages):
+        if k == keyword:
+            try:
+                max_page = max(max_page, int(p))
+            except:
+                pass
+
+    return max_page
+
 
 def save_row(email, keyword, page, domain):
     sheet.append_row([email, "", keyword, page, domain])
