@@ -3,6 +3,10 @@ from urllib.parse import urlparse, urljoin
 import gspread
 from google.oauth2.service_account import Credentials
 
+# ================= CONFIG =================
+DAILY_EMAIL_LIMIT = 10
+MAX_PAGE = 100
+
 # ================= GOOGLE SHEET =================
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -13,70 +17,72 @@ creds_dict = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
 creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
 client = gspread.authorize(creds)
 
-SHEET_NAME = "RPA_Leads"
-sheet = client.open(SHEET_NAME).sheet1
+sheet = client.open("RPA_Leads").sheet1
 
 existing_emails = set(sheet.col_values(1))
-existing_domains = set(sheet.col_values(2))
+existing_domains = set(sheet.col_values(5))   # DOMAIN LAST COLUMN
 
 # ================= SERP API =================
 SERP_API_KEY = os.environ.get("SERP_API_KEY")
 
 def google_search(query, start):
-    url = "https://serpapi.com/search"
-    params = {
-        "q": query,
-        "engine": "google",
-        "api_key": SERP_API_KEY,
-        "num": 10,
-        "start": start
-    }
-    return requests.get(url, params=params, timeout=15).json()
+    return requests.get(
+        "https://serpapi.com/search",
+        params={
+            "q": query,
+            "engine": "google",
+            "api_key": SERP_API_KEY,
+            "num": 10,
+            "start": start
+        },
+        timeout=15
+    ).json()
 
-# ================= EMAIL EXTRACTION =================
-EMAIL_REGEX = re.compile(
-    r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
+# ================= EMAIL FILTER =================
+EMAIL_REGEX = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+
+INVALID_EXT = (
+    ".png",".jpg",".jpeg",".svg",".webp",".gif",
+    ".css",".js",".woff",".woff2",".ttf",".ico"
 )
 
-def extract_emails_from_url(url):
+def clean_emails(emails):
+    valid = set()
+    for e in emails:
+        el = e.lower()
+        if el.endswith(INVALID_EXT):
+            continue
+        if "@2x." in el or "@32px." in el:
+            continue
+        valid.add(e)
+    return valid
+
+def extract_emails(url):
     try:
         html = requests.get(url, timeout=10).text
-        return set(EMAIL_REGEX.findall(html))
+        return clean_emails(set(EMAIL_REGEX.findall(html)))
     except:
         return set()
 
-def get_domain(url):
+# ================= HELPERS =================
+def domain(url):
     return urlparse(url).netloc.lower()
 
-def crawl_site(base_url):
+def crawl_site(url):
     emails = set()
-    pages = [
-        base_url,
-        urljoin(base_url, "/contact"),
-        urljoin(base_url, "/about")
-    ]
-
-    for page in pages:
-        emails |= extract_emails_from_url(page)
+    for p in [url, urljoin(url, "/contact"), urljoin(url, "/about")]:
+        emails |= extract_emails(p)
         time.sleep(1)
-
     return emails
 
-def add_new_emails(emails, domain):
-    for email in emails:
-        if email not in existing_emails:
-            sheet.append_row([email, domain])
-            existing_emails.add(email)
+# ================= KEYWORD PAGE STATE =================
+def get_keyword_page(keyword):
+    records = sheet.get_all_records()
+    pages = [r["Page Number"] for r in records if r.get("Keyword") == keyword]
+    return max(pages) if pages else 0
 
-# ================= PAGE STATE =================
-def get_last_page():
-    try:
-        return int(sheet.acell("D1").value)
-    except:
-        return 0
-
-def save_last_page(page):
-    sheet.update("D1", str(page))
+def save_row(email, keyword, page, domain):
+    sheet.append_row([email, "", keyword, page, domain])
 
 # ================= MAIN =================
 queries = [
@@ -87,42 +93,47 @@ queries = [
     "Business process automation services"
 ]
 
-MAX_PAGE = 100
-
-last_page = get_last_page()
-next_page = last_page + 1
-
-if next_page > MAX_PAGE:
-    print("✅ Max page (100) already scraped. Exiting.")
-    exit()
-
-print(f"\n🚀 Scraping Google result page: {next_page}")
-
-start = (next_page - 1) * 10
+emails_collected = 0
 
 for query in queries:
-    print(f"\n🔍 Searching: {query}")
+    if emails_collected >= DAILY_EMAIL_LIMIT:
+        break
+
+    last_page = get_keyword_page(query)
+    next_page = last_page + 1
+    if next_page > MAX_PAGE:
+        continue
+
+    print(f"\n🔍 {query} → Page {next_page}")
+    start = (next_page - 1) * 10
     results = google_search(query, start)
 
     for r in results.get("organic_results", []):
+        if emails_collected >= DAILY_EMAIL_LIMIT:
+            break
+
         link = r.get("link")
         if not link:
             continue
 
-        domain = get_domain(link)
-
-        if domain in existing_domains:
+        d = domain(link)
+        if d in existing_domains:
             continue
 
-        print(f"🌐 Crawling: {domain}")
+        print(f"🌐 Crawling: {d}")
         emails = crawl_site(link)
 
-        if emails:
-            add_new_emails(emails, domain)
-            existing_domains.add(domain)
+        for e in emails:
+            if emails_collected >= DAILY_EMAIL_LIMIT:
+                break
+            if e in existing_emails:
+                continue
+
+            save_row(e, query, next_page, d)
+            existing_emails.add(e)
+            existing_domains.add(d)
+            emails_collected += 1
 
         time.sleep(2)
 
-save_last_page(next_page)
-
-print("\n✅ Run completed successfully.")
+print(f"\n✅ Done. {emails_collected} emails collected today.")
